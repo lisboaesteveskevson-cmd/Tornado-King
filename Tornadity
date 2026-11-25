@@ -1,0 +1,574 @@
+-- LocalScript: Tornado Hub (Draggable, Toggle, Shapes, MPH 0-300, Subvortices MPH 0-400, WindField & Pull)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ==========================================
+-- ESTADO DO TORNADO
+-- ==========================================
+local state = {
+	Enabled = false,
+	Shape = "Cone", -- "Corda", "Cone", "Wedge", "Cano de fogao"
+	MPH = 120, -- 0 a 300
+	Subvortices = false,
+	SubMPH = 180, -- 0 a 400
+	Origin = Vector3.new(0, 0, 0),
+	HasOrigin = false,
+}
+
+-- ==========================================
+-- PASTA DO TORNADO & WINDFIELD
+-- ==========================================
+local tornadoFolder = Instance.new("Folder")
+tornadoFolder.Name = "TornadoSystemFolder"
+tornadoFolder.Parent = workspace
+
+local mainTornadoModel = Instance.new("Model")
+mainTornadoModel.Name = "MainTornado"
+mainTornadoModel.Parent = tornadoFolder
+
+local subVorticesFolder = Instance.new("Folder")
+subVorticesFolder.Name = "SubVorticesFolder"
+subVorticesFolder.Parent = tornadoFolder
+
+local function getCurrentOrigin()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not state.HasOrigin and root then
+		state.Origin = root.Position - Vector3.new(0, 3, 0) + (root.CFrame.LookVector * 35)
+		state.HasOrigin = true
+	end
+	return state.Origin
+end
+
+local function clearVisuals()
+	mainTornadoModel:ClearAllChildren()
+	subVorticesFolder:ClearAllChildren()
+end
+
+local function createVortexPart(parent, name, size, cframe, transparency, color)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.CFrame = cframe
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.CanQuery = false
+	p.Material = Enum.Material.SmoothPlastic
+	p.Transparency = transparency
+	p.Color = color
+	p.Parent = parent
+	return p
+end
+
+-- Gera camadas visuais conforme o formato escolhido
+local function rebuildTornadoVisuals()
+	clearVisuals()
+	if not state.Enabled then return end
+
+	local basePos = getCurrentOrigin()
+	local powerRatio = math.clamp(state.MPH / 300, 0, 1)
+	local height = 55 + (powerRatio * 95)
+	local layers = 18
+	local spinAngle = tick() * (4 + powerRatio * 18)
+
+	for i = 1, layers do
+		local t = (i - 1) / (layers - 1) -- 0 (base) até 1 (topo)
+		local yPos = basePos.Y + (t * height)
+		local radius = 6
+
+		if state.Shape == "Corda" then
+			-- Fina e quase constante do chão ao topo
+			radius = 4.5 + (t * 2.5) + (powerRatio * 2)
+		elseif state.Shape == "Cone" then
+			-- Estreita embaixo e larga no topo
+			radius = 5 + (t ^ 1.35) * (28 + powerRatio * 14)
+		elseif state.Shape == "Wedge" then
+			-- Em cunha / mais aberta e inclinada
+			radius = 6 + (t * (24 + powerRatio * 12))
+		elseif state.Shape == "Cano de fogao" then
+			-- Cilíndrica / stovepipe bem definida
+			radius = 12 + (powerRatio * 7) + math.sin(t * math.pi * 4) * 1.2
+		end
+
+		local offsetX = 0
+		local offsetZ = 0
+		if state.Shape == "Wedge" then
+			offsetX = t * (10 + powerRatio * 10)
+		elseif state.Shape == "Corda" then
+			offsetX = math.sin(t * 7 + spinAngle * 0.4) * 3.5
+			offsetZ = math.cos(t * 7 + spinAngle * 0.4) * 3.5
+		end
+
+		local layerCenter = Vector3.new(basePos.X + offsetX, yPos, basePos.Z + offsetZ)
+		local segCount = (state.Shape == "Corda") and 6 or 10
+		local segHeight = (height / layers) * 1.15
+		local segWidth = math.max(2.2, (2 * math.pi * radius) / segCount * 0.92)
+		local segThickness = math.max(1.2, radius * 0.14)
+
+		for s = 1, segCount do
+			local angle = spinAngle + ((s / segCount) * math.pi * 2) + (t * 2.2)
+			local px = layerCenter.X + math.cos(angle) * radius
+			local pz = layerCenter.Z + math.sin(angle) * radius
+			local cf = CFrame.lookAt(Vector3.new(px, yPos, pz), Vector3.new(layerCenter.X, yPos, layerCenter.Z))
+
+			local transp = math.clamp(0.42 + (t * 0.42) - (powerRatio * 0.12), 0.25, 0.9)
+			local col = Color3.fromRGB(165, 172, 182):Lerp(Color3.fromRGB(95, 102, 115), t)
+
+			createVortexPart(
+				mainTornadoModel,
+				"Layer_" .. i .. "_Seg_" .. s,
+				Vector3.new(segWidth, segHeight, segThickness),
+				cf,
+				transp,
+				col
+			)
+		end
+	end
+
+	-- Subvórtices (se ativado)
+	if state.Subvortices then
+		local subCount = 5
+		local subPower = math.clamp(state.SubMPH / 400, 0, 1)
+		local orbitRadius = 18 + (powerRatio * 20)
+		local subHeight = 22 + (subPower * 35)
+
+		for v = 1, subCount do
+			local vAngle = (spinAngle * 0.65) + ((v / subCount) * math.pi * 2)
+			local vx = basePos.X + math.cos(vAngle) * orbitRadius
+			local vz = basePos.Z + math.sin(vAngle) * orbitRadius
+
+			for k = 1, 8 do
+				local kt = (k - 1) / 7
+				local ky = basePos.Y + (kt * subHeight)
+				local rSub = 2.2 + (kt * (5 + subPower * 5))
+				local subSpin = spinAngle * 1.8 + (kt * 2)
+
+				for m = 1, 5 do
+					local mAng = subSpin + ((m / 5) * math.pi * 2)
+					local mx = vx + math.cos(mAng) * rSub
+					local mz = vz + math.sin(mAng) * rSub
+					local cf = CFrame.lookAt(Vector3.new(mx, ky, mz), Vector3.new(vx, ky, vz))
+					createVortexPart(
+						subVorticesFolder,
+						"Sub_" .. v .. "_" .. k .. "_" .. m,
+						Vector3.new(1.8, (subHeight / 8) * 1.1, 1.0),
+						cf,
+						0.45 + (kt * 0.35),
+						Color3.fromRGB(130, 138, 150)
+					)
+				end
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- FÍSICA & WINDFIELD
+-- ==========================================
+local function applyWindAndPull(dt)
+	if not state.Enabled then
+		workspace.GlobalWind = Vector3.zero
+		return
+	end
+
+	local origin = getCurrentOrigin()
+	local mph = state.MPH
+	local maxRadius = 45 + (mph / 300) * 115
+	local pullStrength = (mph / 300) * 140
+	local swirlStrength = (mph / 300) * 165
+	local liftStrength = (mph / 300) * 65
+
+	-- Atualiza GlobalWind (WindField nativo do Roblox para folhagens, nuvens, partículas, etc.)
+	local windAngle = tick() * (1.5 + (mph / 300) * 5)
+	local windMag = (mph / 300) * 120
+	workspace.GlobalWind = Vector3.new(
+		math.cos(windAngle) * windMag,
+		(mph / 300) * 25,
+		math.sin(windAngle) * windMag
+	)
+
+	-- Coleta centros de influência (tornado principal + subvórtices)
+	local vortexCenters = {
+		{ pos = origin, radius = maxRadius, pull = pullStrength, swirl = swirlStrength, lift = liftStrength }
+	}
+
+	if state.Subvortices then
+		local subMph = state.SubMPH
+		local subCount = 5
+		local orbitRadius = 18 + ((mph / 300) * 20)
+		local baseAngle = (tick() * (4 + (mph / 300) * 18)) * 0.65
+		local subRadius = 22 + (subMph / 400) * 45
+		local subPull = (subMph / 400) * 190
+		local subSwirl = (subMph / 400) * 220
+		local subLift = (subMph / 400) * 95
+
+		for v = 1, subCount do
+			local vAng = baseAngle + ((v / subCount) * math.pi * 2)
+			local vPos = Vector3.new(
+				origin.X + math.cos(vAng) * orbitRadius,
+				origin.Y,
+				origin.Z + math.sin(vAng) * orbitRadius
+			)
+			table.insert(vortexCenters, {
+				pos = vPos,
+				radius = subRadius,
+				pull = subPull,
+				swirl = subSwirl,
+				lift = subLift,
+			})
+		end
+	end
+
+	-- Aplica puxada e rotação em partes não ancoradas e personagens próximos
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and not obj.Anchored and not obj:IsDescendantOf(tornadoFolder) then
+			local totalForce = Vector3.zero
+			for _, vc in ipairs(vortexCenters) do
+				local flatDelta = Vector3.new(vc.pos.X - obj.Position.X, 0, vc.pos.Z - obj.Position.Z)
+				local dist = flatDelta.Magnitude
+				local heightDiff = math.abs(obj.Position.Y - vc.pos.Y)
+
+				if dist < vc.radius and heightDiff < 120 then
+					local falloff = 1 - (dist / vc.radius)
+					local radialDir = dist > 0.01 and flatDelta.Unit or Vector3.zero
+					local tangentDir = Vector3.new(-radialDir.Z, 0, radialDir.X)
+
+					local pullVec = radialDir * (vc.pull * falloff)
+					local swirlVec = tangentDir * (vc.swirl * falloff)
+					local liftVec = Vector3.new(0, vc.lift * falloff * (dist < vc.radius * 0.5 and 1 or 0.35), 0)
+
+					totalForce += (pullVec + swirlVec + liftVec) * obj.Mass
+				end
+			end
+
+			if totalForce.Magnitude > 0.1 then
+				obj:ApplyImpulse(totalForce * dt * 8)
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- INTERFACE (GUI DRAGGABLE + ABRIR/FECHAR)
+-- ==========================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "TornadoHubGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+-- Botão flutuante para Abrir / Fechar
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleHubButton"
+toggleBtn.Size = UDim2.new(0, 145, 0, 38)
+toggleBtn.Position = UDim2.new(0, 20, 0, 80)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+toggleBtn.TextColor3 = Color3.fromRGB(240, 244, 248)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 13
+toggleBtn.Text = "🌪️ Abrir Hub"
+toggleBtn.Parent = screenGui
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+
+-- Janela Principal Draggable
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainHubFrame"
+mainFrame.Size = UDim2.new(0, 310, 0, 445)
+mainFrame.Position = UDim2.new(0.5, -155, 0.5, -222)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 23, 31)
+mainFrame.BorderSizePixel = 0
+mainFrame.Visible = true
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+
+local stroke = Instance.new("UIStroke", mainFrame)
+stroke.Color = Color3.fromRGB(55, 65, 85)
+stroke.Thickness = 1
+
+-- Barra Superior (Arrastável)
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 40)
+topBar.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+topBar.BorderSizePixel = 0
+topBar.Parent = mainFrame
+Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 12)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -45, 1, 0)
+titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "🌪️ TORNADO HUB"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 15
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = topBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -35, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(170, 45, 55)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.Parent = topBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Lógica de Drag (arrastar pela TopBar)
+do
+	local dragging = false
+	local dragInput, dragStart, startPos
+
+	topBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = mainFrame.Position
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+
+	topBar.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput = input
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if input == dragInput and dragging then
+			local delta = input.Position - dragStart
+			mainFrame.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+local function setHubOpen(open)
+	mainFrame.Visible = open
+	toggleBtn.Text = open and "🌪️ Fechar Hub" or "🌪️ Abrir Hub"
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+	setHubOpen(not mainFrame.Visible)
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	setHubOpen(false)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if not gp and input.KeyCode == Enum.KeyCode.RightShift then
+		setHubOpen(not mainFrame.Visible)
+	end
+end)
+
+-- Container interno
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -24, 1, -52)
+content.Position = UDim2.new(0, 12, 0, 46)
+content.BackgroundTransparency = 1
+content.Parent = mainFrame
+
+-- Botão Ligar / Desligar Tornado
+local powerBtn = Instance.new("TextButton")
+powerBtn.Size = UDim2.new(1, 0, 0, 38)
+powerBtn.Position = UDim2.new(0, 0, 0, 0)
+powerBtn.BackgroundColor3 = Color3.fromRGB(185, 50, 50)
+powerBtn.Text = "TORNADO: DESLIGADO"
+powerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+powerBtn.Font = Enum.Font.GothamBold
+powerBtn.TextSize = 14
+powerBtn.Parent = content
+Instance.new("UICorner", powerBtn).CornerRadius = UDim.new(0, 8)
+
+powerBtn.MouseButton1Click:Connect(function()
+	state.Enabled = not state.Enabled
+	if state.Enabled then
+		state.HasOrigin = false
+		powerBtn.BackgroundColor3 = Color3.fromRGB(45, 165, 95)
+		powerBtn.Text = "TORNADO: LIGADO"
+		rebuildTornadoVisuals()
+	else
+		powerBtn.BackgroundColor3 = Color3.fromRGB(185, 50, 50)
+		powerBtn.Text = "TORNADO: DESLIGADO"
+		workspace.GlobalWind = Vector3.zero
+		clearVisuals()
+	end
+end)
+
+-- Seleção de Formato (Corda, Cone, Wedge, Cano de fogao)
+local shapeLabel = Instance.new("TextLabel")
+shapeLabel.Size = UDim2.new(1, 0, 0, 20)
+shapeLabel.Position = UDim2.new(0, 0, 0, 46)
+shapeLabel.BackgroundTransparency = 1
+shapeLabel.Text = "Formato do Tornado:"
+shapeLabel.TextColor3 = Color3.fromRGB(200, 210, 225)
+shapeLabel.Font = Enum.Font.GothamSemibold
+shapeLabel.TextSize = 13
+shapeLabel.TextXAlignment = Enum.TextXAlignment.Left
+shapeLabel.Parent = content
+
+local shapes = { "Corda", "Cone", "Wedge", "Cano de fogao" }
+local shapeButtons = {}
+
+for idx, shapeName in ipairs(shapes) do
+	local col = (idx - 1) % 2
+	local row = math.floor((idx - 1) / 2)
+
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0.485, 0, 0, 32)
+	btn.Position = UDim2.new(col * 0.515, 0, 0, 70 + (row * 38))
+	btn.BackgroundColor3 = (state.Shape == shapeName) and Color3.fromRGB(55, 115, 215) or Color3.fromRGB(36, 42, 56)
+	btn.Text = shapeName
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 12
+	btn.Parent = content
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+	shapeButtons[shapeName] = btn
+
+	btn.MouseButton1Click:Connect(function()
+		state.Shape = shapeName
+		for sName, sBtn in pairs(shapeButtons) do
+			sBtn.BackgroundColor3 = (sName == state.Shape) and Color3.fromRGB(55, 115, 215) or Color3.fromRGB(36, 42, 56)
+		end
+		rebuildTornadoVisuals()
+	end)
+end
+
+-- Helper para criar Slider funcional
+local function createSlider(yPos, labelText, minVal, maxVal, defaultVal, onChanged)
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 20)
+	lbl.Position = UDim2.new(0, 0, 0, yPos)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = labelText .. ": " .. tostring(defaultVal)
+	lbl.TextColor3 = Color3.fromRGB(220, 228, 240)
+	lbl.Font = Enum.Font.GothamSemibold
+	lbl.TextSize = 13
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = content
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, 0, 0, 14)
+	track.Position = UDim2.new(0, 0, 0, yPos + 24)
+	track.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+	track.Parent = content
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local initPct = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(initPct, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+	fill.Parent = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local sliding = false
+
+	local function updateFromX(inputX)
+		local rel = math.clamp((inputX - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+		fill.Size = UDim2.new(rel, 0, 1, 0)
+		local val = math.floor(minVal + (rel * (maxVal - minVal)) + 0.5)
+		lbl.Text = labelText .. ": " .. tostring(val)
+		onChanged(val)
+	end
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = true
+			updateFromX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateFromX(input.Position.X)
+		end
+	end)
+end
+
+-- Slider MPH (0 a 300)
+createSlider(154, "MPH Tornado", 0, 300, state.MPH, function(val)
+	state.MPH = val
+	rebuildTornadoVisuals()
+end)
+
+-- Botão Subvórtices (Sim / Não)
+local subToggleBtn = Instance.new("TextButton")
+subToggleBtn.Size = UDim2.new(1, 0, 0, 34)
+subToggleBtn.Position = UDim2.new(0, 0, 0, 208)
+subToggleBtn.BackgroundColor3 = Color3.fromRGB(45, 52, 68)
+subToggleBtn.Text = "Subvórtices: Não"
+subToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+subToggleBtn.Font = Enum.Font.GothamBold
+subToggleBtn.TextSize = 13
+subToggleBtn.Parent = content
+Instance.new("UICorner", subToggleBtn).CornerRadius = UDim.new(0, 6)
+
+subToggleBtn.MouseButton1Click:Connect(function()
+	state.Subvortices = not state.Subvortices
+	subToggleBtn.Text = state.Subvortices and "Subvórtices: Sim" or "Subvórtices: Não"
+	subToggleBtn.BackgroundColor3 = state.Subvortices and Color3.fromRGB(60, 140, 220) or Color3.fromRGB(45, 52, 68)
+	rebuildTornadoVisuals()
+end)
+
+-- Slider MPH Subvórtices (0 a 400)
+createSlider(252, "MPH Subvórtices", 0, 400, state.SubMPH, function(val)
+	state.SubMPH = val
+	rebuildTornadoVisuals()
+end)
+
+-- Botão Reposicionar Tornado na sua frente
+local moveBtn = Instance.new("TextButton")
+moveBtn.Size = UDim2.new(1, 0, 0, 32)
+moveBtn.Position = UDim2.new(0, 0, 0, 306)
+moveBtn.BackgroundColor3 = Color3.fromRGB(50, 58, 76)
+moveBtn.Text = "📍 Trazer Tornado à Frente"
+moveBtn.TextColor3 = Color3.fromRGB(235, 240, 250)
+moveBtn.Font = Enum.Font.GothamSemibold
+moveBtn.TextSize = 12
+moveBtn.Parent = content
+Instance.new("UICorner", moveBtn).CornerRadius = UDim.new(0, 6)
+
+moveBtn.MouseButton1Click:Connect(function()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if root then
+		state.Origin = root.Position - Vector3.new(0, 3, 0) + (root.CFrame.LookVector * 35)
+		state.HasOrigin = true
+		rebuildTornadoVisuals()
+	end
+end)
+
+-- Loop principal
+local lastVisualUpdate = 0
+RunService.Heartbeat:Connect(function(dt)
+	applyWindAndPull(dt)
+	if state.Enabled and (tick() - lastVisualUpdate) >= 0.04 then
+		lastVisualUpdate = tick()
+		rebuildTornadoVisuals()
+	end
+end)
